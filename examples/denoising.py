@@ -26,7 +26,7 @@ scales = 3
 thresholdingFactor = 3
 
 # load data
-X = img.imread("barbara.jpg")[::4, ::4]
+X = plt.imread("barbara.jpg")[::4, ::4]
 X = X.astype(float)
 
 # add noise

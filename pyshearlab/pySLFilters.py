@@ -499,7 +499,7 @@ def dfilters(fname, type):
         h = np.append(h, h[-2::-1])
         g = np.array([-0.125*k1*k2*k3, 0.25*k1*k2,
                     -0.5*k1-0.5*k3-0.375*k1*k2*k3, 1+0.5*k1*k2])*M2
-        g = np.append(g, h[-2::-1])
+        g = np.append(g, g[-2::-1])
         B = dmaxflat(4,0)
         h0 = mctrans(h,B)
         g0 = mctrans(g,B)
@@ -520,7 +520,7 @@ def dfilters(fname, type):
         h = np.append(h, h[-2::-1])
         g = np.array([-0.125*k1*k2*k3, 0.25*k1*k2,
                     -0.5*k1-0.5*k3-0.375*k1*k2*k3, 1+0.5*k1*k2])*M2
-        g = np.append(g, h[-2::-1])
+        g = np.append(g, g[-2::-1])
         B = dmaxflat(5,0)
         h0 = mctrans(h,B)
         g0 = mctrans(g,B)
@@ -752,7 +752,7 @@ def modulate2(x, type, center=np.array([0, 0])):
         if x.ndim == 1:
             y = x*m2
         else:
-            y = x * np.tile(m2, np.array([size[0], 1]))
+            y = x * np.tile(m2, (size[0], 1))
     elif type == 'b':
         m1 = np.power(-1,n1)
         m2 = np.power(-1,n2)
