@@ -511,13 +511,13 @@ def SLgetWedgeBandpassAndLowpassFilters2D(rows,cols,shearLevels,directionalFilte
         filterLow2[j] = np.convolve(filterLow2[-1], SLupsample(filterLow2[j+1],2,1))
     # construct bandpass filters for scales 1 to nScales
     for j in range(len(filterHigh)):
-        bandpass[:,:,j] = fftlib.fftshift(fftlib.fft2(fftlib.ifftshift(SLpadArray(filterHigh[j], np.array([rows, cols])))))
+        bandpass[:,:,j] = fftlib.fftshift(fftlib.fft2(fftlib.ifftshift(SLpadArray(filterHigh[j].flatten(), np.array([rows, cols])))))
 
     ## construct wedge filters for achieving directional selectivity.
     # as the entries in the shearLevels array describe the number of differently
     # sheared atoms on a certain scale, a different set of wedge
     # filters has to be constructed for each value in shearLevels.
-    filterLow2[-1].shape = (1, len(filterLow2[-1]))
+    filterLow2_last = filterLow2[-1].flatten()
     for shearLevel in np.unique(shearLevels):
             # preallocate a total of floor(2^(shearLevel+1)+1) wedge filters, where
             # floor(2^(shearLevel+1)+1) is the number of different directions of
@@ -540,9 +540,9 @@ def SLgetWedgeBandpassAndLowpassFilters2D(rows,cols,shearLevels,directionalFilte
             #
             # convert filterLow2 into a pseudo 2D array of size (len, 1) to use
             # the scipy.signal.convolve2d accordingly.
-            filterLow2[-1-shearLevel].shape = (1, len(filterLow2[-1-shearLevel]))
+            filterLow2[len(filterLow2)-shearLevel-1] = filterLow2[len(filterLow2)-shearLevel-1].reshape(-1, 1)
 
-            wedgeHelp = scipy.signal.convolve2d(directionalFilterUpsampled,np.transpose(filterLow2[len(filterLow2)-shearLevel-1]));
+            wedgeHelp = scipy.signal.convolve2d(directionalFilterUpsampled, filterLow2[len(filterLow2)-shearLevel-1].T);
             wedgeHelp = SLpadArray(wedgeHelp,np.array([rows,cols]));
             # please note that wedgeHelp now corresponds to
             # conv(p_j,h_(J-j*alpha_j/2)') in the language of the paper. to see
@@ -561,7 +561,7 @@ def SLgetWedgeBandpassAndLowpassFilters2D(rows,cols,shearLevels,directionalFilte
             # (21) on page 14.
             #print("shearLevel:" + str(shearLevel) + ", Index: " + str(len(filterLow2)-max(shearLevel-1,0)-1) + ", Shape: " + str(filterLow2[len(filterLow2)-max(shearLevel-1,0)-1].shape))
             #print(filterLow2[len(filterLow2)-max(shearLevel-1,0)-1].shape)
-            lowpassHelp = SLpadArray(filterLow2[len(filterLow2)-max(shearLevel-1,0)-1], np.asarray(wedgeUpsampled.shape))
+            lowpassHelp = SLpadArray(filterLow2[len(filterLow2)-max(shearLevel-1,0)-1].flatten(), np.asarray(wedgeUpsampled.shape))
             if shearLevel >= 1:
                 wedgeUpsampled = fftlib.fftshift(fftlib.ifft2(fftlib.ifftshift(fftlib.fftshift(fftlib.fft2(fftlib.ifftshift(lowpassHelp))) * fftlib.fftshift(fftlib.fft2(fftlib.ifftshift(wedgeUpsampled))))))
             lowpassHelpFlip = np.fliplr(lowpassHelp)
@@ -654,10 +654,10 @@ def SLpadArray(array, newSize):
         # row array in the middle of the new empty array). this seems to be
         # the behavior of the ShearLab routine from matlab.
         if array.ndim == 1:
-            paddedArray[padSizes[1], padSizes[0]:padSizes[0]+currSize[0]+idxModifier[0]] = array
+            paddedArray[padSizes[0], padSizes[1]:padSizes[1]+currSize[0]] = array
         else:
             paddedArray[padSizes[0]-idxModifier[0]:padSizes[0]+currSize[0]-idxModifier[0],
-                    padSizes[1]:padSizes[1]+currSize[1]+idxModifier[1]] = array
+                    padSizes[1]:padSizes[1]+currSize[1]-idxModifier[1]] = array
     return paddedArray
 
 
