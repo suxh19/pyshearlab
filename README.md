@@ -17,7 +17,11 @@ pyShearLab2D has been developed and tested with Python 3.6 using the Anaconda pa
 You can simply download, unzip and use pyShearLab. Depending on your specific Python development environment, you may want to add the pyShearLab2D folder to your Python environment (Python Path). The dependencies can be installed using pip. If you use Anaconda, they are already installed.
 A pip package is currently _not_ available, but the package can be installed straight from github via:
 
-    pip install https://github.com/stefanloock/pyshearlab/archive/master.zip
+    pip install git+https://github.com/suxh19/pyshearlab.git
+
+Or for local development:
+
+    pip install -e .
 
 ## Usage
 In order to use pyShearLab you need to import it as a module, see pySLExampleDenoising.py as an example. The denoising example 

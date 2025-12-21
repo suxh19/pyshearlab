@@ -11,7 +11,8 @@ from setuptools import setup, find_packages
 import os
 
 root_path = os.path.dirname(__file__)
-requires = open(os.path.join(root_path, 'requirements.txt')).readlines()
+with open(os.path.join(root_path, 'requirements.txt')) as f:
+    requires = f.read().splitlines()
 
 setup(
     name='pyshearlab',
@@ -20,7 +21,7 @@ setup(
 
     description='Shearlets in python',
 
-    url='https://github.com/stefanloock/pyshearlab',
+    url='https://github.com/suxh19/pyshearlab',
 
     author='Stefan Loock',
 
@@ -29,5 +30,5 @@ setup(
     packages=find_packages(exclude=['*test*']),
     package_dir={'pyshearlab': 'pyshearlab'},
     
-    install_requires=[requires]
+    install_requires=requires
 )
