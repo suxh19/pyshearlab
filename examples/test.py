@@ -1,7 +1,7 @@
 import numpy as np
 import pyshearlab
-from pyshearlab.pySLFilters import dfilters, modulate2
 import os
+from PIL import Image
 
 # 获取当前脚本所在目录
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,44 +11,32 @@ results_dir = os.path.join(base_dir, "results")
 if not os.path.exists(results_dir):
     os.makedirs(results_dir)
 
-# 1. 设置参数
-rows, cols = 256, 1024
+# 1. 加载 0000.tif 图像
+image_path = os.path.join(base_dir, "0000.tif")
+image = np.array(Image.open(image_path), dtype=np.float64)
+
+# 归一化到 [0, 1]
+if image.max() > 1:
+    image = image / 255.0
+
+print(f"图像已加载，尺寸: {image.shape}")
+
+# 2. 设置参数
+rows, cols = image.shape[:2]
 scales = 3
-
-# 2. 手动准备方向滤波器 (避开库内部的 Bug)
-# 使用 'cd' 滤波器通常比 'dmaxflat4' 更小，更适合 256 这种较小尺寸的图像维度
-h0, h1 = dfilters('cd', 'd') 
-h0 = h0 / np.sqrt(2)
-directional_filter = modulate2(h0, 'c')
-
-# 3. 准备标准小波滤波器 (Quad Mirror Filter)
-qmf = np.array([
-    0.0104933261758410, -0.0263483047033631, -0.0517766952966370,
-    0.276348304703363, 0.582566738241592, 0.276348304703363,
-    -0.0517766952966369, -0.0263483047033631, 0.0104933261758408
-])
 
 print("正在生成剪切波系统...")
 
-# 4. 调用函数并显式传入滤波器
-# 注意：传入 directionalFilter 后，库将不再执行报错的那行代码
-shearletSystem = pyshearlab.SLgetShearletSystem2D(
-    0, rows, cols, scales,
-    directionalFilter=directional_filter,
-    quadratureMirrorFilter=qmf
-)
+# 3. 调用函数生成剪切波系统 (使用库内部默认滤波器)
+shearletSystem = pyshearlab.SLgetShearletSystem2D(0, rows, cols, scales)
 
 print("系统生成成功！")
 
-# 5. 生成条状图像 (Striped Image)
-image = np.zeros((rows, cols))
-# 在图像中生成一些垂直条纹
-for i in range(0, cols, 64):
-    image[:, i:i+32] = 1
-
+# 4. 正在进行剪切波分解
 print("正在进行剪切波分解...")
 coeffs = pyshearlab.SLsheardec2D(image, shearletSystem)
 
+# 5. 正在进行剪切波重构
 print("正在进行剪切波重构...")
 X_rec = pyshearlab.SLshearrec2D(coeffs, shearletSystem)
 
@@ -58,7 +46,7 @@ import matplotlib.pyplot as plt
 plt.figure(figsize=(15, 8))
 
 plt.subplot(2, 1, 1)
-plt.title("Original Striped Image (256x1024)")
+plt.title(f"Original Image from 0000.tif ({rows}x{cols})")
 plt.imshow(image, cmap='gray', aspect='auto')
 plt.colorbar()
 
@@ -68,7 +56,7 @@ plt.imshow(np.real(X_rec), cmap='gray', aspect='auto')
 plt.colorbar()
 
 plt.tight_layout()
-save_path = os.path.join(results_dir, "striped_result.png")
+save_path = os.path.join(results_dir, "0000_result.png")
 plt.savefig(save_path)
 print(f"结果已保存至 {save_path}")
 
@@ -102,7 +90,7 @@ for i, scale in enumerate(unique_scales):
     plt.colorbar(label='Energy')
 
 plt.tight_layout()
-save_path = os.path.join(results_dir, "coefficients_analysis.png")
+save_path = os.path.join(results_dir, "0000_coefficients_analysis.png")
 plt.savefig(save_path)
 print(f"系数分析结果已保存至 {save_path}")
 
@@ -129,7 +117,7 @@ for d in range(n_directions):
     plt.axis('off')
 
 plt.tight_layout()
-save_path = os.path.join(results_dir, "scale_directions_analysis.png")
+save_path = os.path.join(results_dir, "0000_scale_directions_analysis.png")
 plt.savefig(save_path)
 print(f"尺度 {target_scale} 的方向分析已保存至 {save_path}")
 plt.show()
