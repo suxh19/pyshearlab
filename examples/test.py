@@ -120,4 +120,67 @@ plt.tight_layout()
 save_path = os.path.join(results_dir, "0000_scale_directions_analysis.png")
 plt.savefig(save_path)
 print(f"尺度 {target_scale} 的方向分析已保存至 {save_path}")
+
+# 9. 稀疏性与统计分析 (Sparsity and Statistical Analysis)
+print("\n--- 剪切波系数稀疏性与统计分析 ---")
+
+# 将所有系数展平为一个向量进行全局分析
+all_coeffs = coeffs.flatten()
+total_elements = all_coeffs.size
+magnitudes = np.abs(all_coeffs)
+sorted_magnitudes = np.sort(magnitudes)[::-1]
+cumulative_energy = np.cumsum(sorted_magnitudes**2)
+total_energy = cumulative_energy[-1]
+
+# 计算达到不同能量百分比所需的系数比例
+energy_thresholds = [0.5, 0.9, 0.95, 0.99]
+sparsity_results = {}
+
+print(f"总系数数量: {total_elements}")
+for threshold in energy_thresholds:
+    count = np.searchsorted(cumulative_energy, threshold * total_energy) + 1
+    percentage = (count / total_elements) * 100
+    sparsity_results[threshold] = percentage
+    print(f"包含 {threshold*100:.0f}% 能量所需的系数比例: {percentage:.4f}% ({count} 个)")
+
+# 各尺度统计
+print("\n各尺度统计信息:")
+for scale in unique_scales:
+    scale_mask = (idxs[:, 1] == scale)
+    scale_coeffs = coeffs[:, :, scale_mask]
+    scale_mag = np.abs(scale_coeffs)
+    
+    print(f"Scale {int(scale)}:")
+    print(f"  - 最大幅值: {np.max(scale_mag):.6f}")
+    print(f"  - 平均幅值: {np.mean(scale_mag):.6f}")
+    print(f"  - 标准差:   {np.std(scale_mag):.6f}")
+    print(f"  - 能量占比: {(np.sum(scale_mag**2) / total_energy)*100:.2f}%")
+
+# 可视化稀疏性
+plt.figure(figsize=(12, 6))
+
+# 1. 系数幅值分布 (对数坐标)
+plt.subplot(1, 2, 1)
+plt.hist(magnitudes + 1e-10, bins=100, log=True, color='skyblue', edgecolor='black')
+plt.title("Coefficient Magnitude Distribution (Log Scale)")
+plt.xlabel("Magnitude")
+plt.ylabel("Frequency (Log)")
+plt.grid(True, which='both', linestyle='--', alpha=0.5)
+
+# 2. 累积能量曲线
+plt.subplot(1, 2, 2)
+plt.plot(np.linspace(0, 100, len(cumulative_energy)), cumulative_energy / total_energy * 100, 'r-', linewidth=2)
+plt.title("Cumulative Energy vs. Percentage of Coefficients")
+plt.xlabel("Percentage of Coefficients (%)")
+plt.ylabel("Cumulative Energy (%)")
+plt.grid(True)
+plt.xlim(0, 10) # 重点看前 10% 的系数，因为通常非常稀疏
+plt.axhline(y=95, color='g', linestyle='--', label='95% Energy')
+plt.legend()
+
+plt.tight_layout()
+save_path = os.path.join(results_dir, "0000_sparsity_analysis.png")
+plt.savefig(save_path)
+print(f"\n稀疏性分析图表已保存至 {save_path}")
+
 plt.show()

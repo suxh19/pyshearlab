@@ -323,7 +323,7 @@ def SLshearadjoint2D(coeffs, shearletSystem):
     X = np.zeros((coeffs.shape[0], coeffs.shape[1]), dtype=complex)
 
     for j in range(shearletSystem["nShearlets"]):
-        X += np.conj(shearletSystem["shearlets"][:,:,j]) * fftlib.fftshift(fftlib.fft2(fftlib.ifftshift(coeffs[..., j])))
+        X += shearletSystem["shearlets"][:,:,j] * fftlib.fftshift(fftlib.fft2(fftlib.ifftshift(coeffs[..., j])))
 
     # get data in frequency domain
     Xresult = fftlib.fftshift(fftlib.ifft2(fftlib.ifftshift(X)))
