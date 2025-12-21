@@ -542,8 +542,8 @@ def SLgetWedgeBandpassAndLowpassFilters2D(rows,cols,shearLevels,directionalFilte
             # the scipy.signal.convolve2d accordingly.
             filterLow2[len(filterLow2)-shearLevel-1] = filterLow2[len(filterLow2)-shearLevel-1].reshape(-1, 1)
 
-            wedgeHelp = scipy.signal.convolve2d(directionalFilterUpsampled, filterLow2[len(filterLow2)-shearLevel-1].T);
-            wedgeHelp = SLpadArray(wedgeHelp,np.array([rows,cols]));
+            wedgeHelp = scipy.signal.convolve2d(directionalFilterUpsampled, filterLow2[len(filterLow2)-shearLevel-1])
+            wedgeHelp = SLpadArray(wedgeHelp,np.array([rows,cols]))
             # please note that wedgeHelp now corresponds to
             # conv(p_j,h_(J-j*alpha_j/2)') in the language of the paper. to see
             # this, consider the definition of p_j on page 14, the definition of w_j
@@ -555,7 +555,7 @@ def SLgetWedgeBandpassAndLowpassFilters2D(rows,cols,shearLevels,directionalFilte
             ## application of the digital shear operator (compare equation (22))
             # upsample wedge filter in x-direction. this operation corresponds to
             # the upsampling in equation (21) on page 15.
-            wedgeUpsampled = SLupsample(wedgeHelp,2,np.power(2,shearLevel)-1);
+            wedgeUpsampled = SLupsample(wedgeHelp,2,np.power(2,shearLevel)-1)
 
             #convolve wedge filter with lowpass filter, again following equation
             # (21) on page 14.
