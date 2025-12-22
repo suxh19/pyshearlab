@@ -35,3 +35,8 @@ test = [
 
 [tool.setuptools]
 packages = ["pyshearlab"]
+
+[dependency-groups]
+dev = [
+    "torch>=1.13.1",
+]

@@ -367,3 +367,162 @@ def SLshearrecadjoint2D(X, shearletSystem):
 
 #
 ##############################################################################
+
+
+##############################################################################
+# High-level API with Automatic Square Padding for Non-Square Images
+##############################################################################
+
+def SLsheardecPadded2D(X, nScales, shearLevels=None, pad_mode='symmetric', 
+                        full=0, directionalFilter=None, quadratureMirrorFilter=None):
+    """
+    Shearlet decomposition with automatic square padding for non-square images.
+    
+    This function solves the filter wrapping problem when processing images with
+    extreme aspect ratios (e.g., 256x1024). It automatically:
+    1. Pads the input to a square using symmetric (mirror) padding
+    2. Creates a shearlet system for the padded size
+    3. Performs decomposition
+    4. Crops the coefficients back to the original image size
+    
+    Usage:
+    
+        coeffs, context = SLsheardecPadded2D(X, nScales)
+        coeffs, context = SLsheardecPadded2D(X, nScales, shearLevels=[1,1,2])
+        coeffs, context = SLsheardecPadded2D(X, nScales, pad_mode='reflect')
+    
+    Input:
+    
+        X:           2D data in time domain (can be non-square).
+        nScales:     Number of scales for the shearlet system. Has to be >= 1.
+        shearLevels: Optional. A 1xnScales array specifying shear levels per scale.
+                     Default is ceil((1:nScales)/2).
+        pad_mode:    Padding mode for symmetric padding. Default is 'symmetric'.
+                     Use 'reflect' for edge-reflected padding.
+        full:        Logical value for full shearlet system. Default is 0.
+        directionalFilter: Optional 2D directional filter.
+        quadratureMirrorFilter: Optional 1D QMF filter.
+    
+    Output:
+    
+        coeffs:  X x Y x N array of shearlet coefficients, where X and Y match
+                 the ORIGINAL input size (not the padded size).
+        context: Dictionary containing information needed for reconstruction:
+                 - 'shearletSystem': The shearlet system for the padded image
+                 - 'pad_info': Padding information from SLsymmetricPad2D
+                 - 'original_dtype': Original data type
+                 - 'coeffs_padded': Full padded coefficients (for exact reconstruction)
+    
+    Example:
+    
+        # Process a 256x1024 sinogram without filter wrapping
+        coeffs, ctx = SLsheardecPadded2D(sinogram, nScales=3)
+        
+        # Modify coefficients (e.g., thresholding for denoising)
+        coeffs_modified = coeffs * (np.abs(coeffs) > threshold)
+        
+        # Reconstruct
+        result = SLshearrecPadded2D(coeffs_modified, ctx)
+    
+    See also: SLshearrecPadded2D, SLsheardec2D, SLsymmetricPad2D
+    """
+    # Step 1: Pad input to square using symmetric padding
+    X_padded, pad_info = SLsymmetricPad2D(X, make_square=True, pad_mode=pad_mode)
+    padded_rows, padded_cols = X_padded.shape
+    
+    # Step 2: Create shearlet system for the padded (square) image
+    shearletSystem = SLgetShearletSystem2D(
+        useGPU=0, 
+        rows=padded_rows, 
+        cols=padded_cols, 
+        nScales=nScales,
+        shearLevels=shearLevels,
+        full=full,
+        directionalFilter=directionalFilter,
+        quadratureMirrorFilter=quadratureMirrorFilter
+    )
+    
+    # Step 3: Perform decomposition on padded image
+    coeffs_padded = SLsheardec2D(X_padded, shearletSystem)
+    
+    # Step 4: Crop coefficients back to original size (for user convenience)
+    coeffs = SLcrop2D(coeffs_padded, pad_info)
+    
+    # Store context for reconstruction
+    # IMPORTANT: We store the full padded coefficients for exact reconstruction
+    context = {
+        'shearletSystem': shearletSystem,
+        'pad_info': pad_info,
+        'original_dtype': X.dtype,
+        'coeffs_padded': coeffs_padded  # Full coefficients for reconstruction
+    }
+    
+    return coeffs, context
+
+
+def SLshearrecPadded2D(coeffs, context):
+    """
+    Reconstruct from shearlet coefficients obtained via SLsheardecPadded2D.
+    
+    This function handles the padding/cropping automatically. If the input 
+    coefficients match the original decomposition (not modified), exact 
+    reconstruction is performed. If coefficients were modified (e.g., for 
+    denoising), the modifications are applied to the central region.
+    
+    Usage:
+    
+        X_rec = SLshearrecPadded2D(coeffs, context)
+    
+    Input:
+    
+        coeffs:  X x Y x N array of shearlet coefficients (original image size).
+                 These should match the size returned by SLsheardecPadded2D.
+                 Can be modified (e.g., thresholded for denoising).
+        context: Dictionary returned by SLsheardecPadded2D containing:
+                 - 'shearletSystem': The shearlet system used for decomposition
+                 - 'pad_info': Padding information
+                 - 'original_dtype': Original data type
+                 - 'coeffs_padded': Full padded coefficients from decomposition
+    
+    Output:
+    
+        X: Reconstructed 2D data with the same size as the original input.
+    
+    Example:
+    
+        # Full decomposition-reconstruction cycle (exact)
+        coeffs, ctx = SLsheardecPadded2D(image, nScales=3)
+        reconstructed = SLshearrecPadded2D(coeffs, ctx)
+        
+        # With coefficient modification (e.g., denoising)
+        coeffs, ctx = SLsheardecPadded2D(noisy_image, nScales=3)
+        coeffs_denoised = coeffs * (np.abs(coeffs) > threshold)
+        denoised = SLshearrecPadded2D(coeffs_denoised, ctx)
+    
+    See also: SLsheardecPadded2D, SLshearrec2D, SLcrop2D
+    """
+    shearletSystem = context['shearletSystem']
+    pad_info = context['pad_info']
+    original_dtype = context['original_dtype']
+    coeffs_padded_original = context['coeffs_padded']
+    
+    pad_top = pad_info['pad_top']
+    pad_left = pad_info['pad_left']
+    original_rows, original_cols = pad_info['original_shape']
+    
+    # Check if coefficients were modified
+    # If coefficients are the same as during decomposition, use the full padded coefficients
+    # Otherwise, update the central region with the modified coefficients
+    coeffs_padded = coeffs_padded_original.copy()
+    coeffs_padded[pad_top : pad_top + original_rows,
+                  pad_left : pad_left + original_cols,
+                  :] = coeffs
+    
+    # Perform reconstruction on the padded coefficients
+    X_padded = SLshearrec2D(coeffs_padded, shearletSystem)
+    
+    # Crop result back to original size
+    X_rec = SLcrop2D(X_padded, pad_info)
+    
+    return X_rec.astype(original_dtype)
+

@@ -810,3 +810,141 @@ def SLupsample(array, dims, nZeros):
 
 #
 ##############################################################################
+
+
+##############################################################################
+# Square Padding Utilities for Non-Square Images
+##############################################################################
+
+def SLsymmetricPad2D(array, make_square=True, pad_mode='symmetric'):
+    """
+    Pad a 2D array using symmetric (mirror) padding.
+    
+    This function solves the filter wrapping problem in ShearLab when processing
+    images with extreme aspect ratios (e.g., 256x1024). The wrapping issue occurs
+    because np.roll in SLdshear causes multiple wrap-arounds when the shear 
+    displacement exceeds the dimension size.
+    
+    Usage:
+    
+        padded_array, pad_info = SLsymmetricPad2D(array)
+        padded_array, pad_info = SLsymmetricPad2D(array, make_square=True)
+        padded_array, pad_info = SLsymmetricPad2D(array, pad_mode='reflect')
+    
+    Input:
+    
+        array:       2D numpy array to be padded.
+        make_square: If True (default), pad the array to a square shape using
+                     the larger dimension. This is REQUIRED to avoid filter
+                     wrapping for non-square images.
+        pad_mode:    Padding mode for numpy.pad. Default is 'symmetric' (mirror
+                     padding at edges). Other options: 'reflect', 'edge', 'wrap'.
+                     'symmetric' is recommended as it minimizes Gibbs phenomenon
+                     (ringing artifacts) in FFT-based processing.
+    
+    Output:
+    
+        padded_array: The padded 2D array.
+        pad_info:     Dictionary containing padding information for later cropping:
+                      - 'original_shape': Original array shape
+                      - 'pad_top', 'pad_bottom', 'pad_left', 'pad_right': Padding amounts
+                      - 'padded_shape': Shape after padding
+    
+    Example:
+    
+        # Pad a 256x1024 image to 1024x1024
+        img_padded, pad_info = SLsymmetricPad2D(img)
+        
+        # Later, crop back to original size
+        img_cropped = SLcrop2D(result, pad_info)
+    
+    See also: SLcrop2D, SLpadArray
+    """
+    if array.ndim != 2:
+        raise ValueError("SLsymmetricPad2D only supports 2D arrays.")
+    
+    rows, cols = array.shape
+    
+    if make_square:
+        target_size = max(rows, cols)
+        target_rows = target_size
+        target_cols = target_size
+    else:
+        target_rows = rows
+        target_cols = cols
+    
+    # Calculate padding amounts
+    pad_top = (target_rows - rows) // 2
+    pad_bottom = target_rows - rows - pad_top
+    pad_left = (target_cols - cols) // 2
+    pad_right = target_cols - cols - pad_left
+    
+    # Store padding info for later cropping
+    pad_info = {
+        'original_shape': (rows, cols),
+        'pad_top': pad_top,
+        'pad_bottom': pad_bottom,
+        'pad_left': pad_left,
+        'pad_right': pad_right,
+        'padded_shape': (target_rows, target_cols)
+    }
+    
+    # Apply symmetric padding
+    # Note: basedpyright incorrectly flags np.pad mode parameter as invalid
+    padded_array = np.pad(array,
+                          ((pad_top, pad_bottom), (pad_left, pad_right)), 
+                          mode=pad_mode)  # type: ignore[reportArgumentType]
+    
+    return padded_array, pad_info
+
+
+def SLcrop2D(array, pad_info):
+    """
+    Crop a 2D or 3D array back to its original size using padding information.
+    
+    This function reverses the padding applied by SLsymmetricPad2D, extracting
+    the central region corresponding to the original image size.
+    
+    Usage:
+    
+        cropped = SLcrop2D(padded_array, pad_info)
+        cropped_coeffs = SLcrop2D(coeffs_3d, pad_info)  # Works with 3D coefficient arrays
+    
+    Input:
+    
+        array:    2D or 3D numpy array to be cropped. For 3D arrays (e.g., shearlet
+                  coefficients), cropping is applied to the first two dimensions.
+        pad_info: Dictionary returned by SLsymmetricPad2D containing:
+                  - 'original_shape': Target output shape (rows, cols)
+                  - 'pad_top', 'pad_left': Offsets for cropping
+    
+    Output:
+    
+        cropped: Array cropped to the original size.
+                 For 2D input: shape = original_shape
+                 For 3D input: shape = (original_rows, original_cols, n_channels)
+    
+    Example:
+    
+        # Full workflow for non-square image processing
+        img_padded, pad_info = SLsymmetricPad2D(img)
+        shearletSystem = SLgetShearletSystem2D(0, *img_padded.shape, nScales)
+        coeffs_padded = SLsheardec2D(img_padded, shearletSystem)
+        coeffs = SLcrop2D(coeffs_padded, pad_info)  # Crop coefficients
+    
+    See also: SLsymmetricPad2D
+    """
+    original_rows, original_cols = pad_info['original_shape']
+    pad_top = pad_info['pad_top']
+    pad_left = pad_info['pad_left']
+    
+    if array.ndim == 2:
+        return array[pad_top : pad_top + original_rows,
+                     pad_left : pad_left + original_cols]
+    elif array.ndim == 3:
+        # For 3D arrays (e.g., shearlet coefficients), crop first two dimensions
+        return array[pad_top : pad_top + original_rows,
+                     pad_left : pad_left + original_cols,
+                     :]
+    else:
+        raise ValueError(f"SLcrop2D supports 2D and 3D arrays, got {array.ndim}D.")
