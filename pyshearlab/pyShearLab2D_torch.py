@@ -9,9 +9,9 @@ Stefan Loock (original NumPy), PyTorch translation 2024
 """
 
 from __future__ import division
-from typing import Dict, Optional, Union, Tuple, Any
+from typing import Dict, Optional, Union, Tuple, Any, List
+import math
 import torch
-import numpy as np
 
 from pyshearlab import pySLFilters_torch as filters_torch
 from pyshearlab import pySLUtilities_torch as utils_torch
@@ -19,7 +19,7 @@ from pyshearlab import pySLUtilities_torch as utils_torch
 
 def SLgetShearletSystem2D(
     rows: int, cols: int, nScales: int,
-    shearLevels: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    shearLevels: Optional[Union[torch.Tensor, List]] = None,
     full: int = 0,
     directionalFilter: Optional[torch.Tensor] = None,
     quadratureMirrorFilter: Optional[torch.Tensor] = None,
@@ -45,9 +45,10 @@ def SLgetShearletSystem2D(
     """
     # Set defaults
     if shearLevels is None:
-        shearLevels = np.ceil(np.arange(1, nScales + 1) / 2).astype(int)
+        # Equivalent to: np.ceil(np.arange(1, nScales + 1) / 2).astype(int)
+        shearLevels = [int(math.ceil(i / 2)) for i in range(1, nScales + 1)]
     elif isinstance(shearLevels, torch.Tensor):
-        shearLevels = shearLevels.cpu().numpy()
+        shearLevels = shearLevels.cpu().tolist()
     
     if directionalFilter is None:
         h0, _ = filters_torch.dfilters('dmaxflat4', 'd', dtype=dtype, device=device)
@@ -95,7 +96,9 @@ def SLgetShearletSystem2D(
 
 def SLsheardec2D(X: torch.Tensor, shearletSystem: Dict[str, Any]) -> torch.Tensor:
     """
-    Shearlet decomposition of 2D data (PyTorch version).
+    Shearlet decomposition of 2D data (PyTorch version, vectorized).
+    
+    This is an optimized version using batch FFT operations instead of loops.
     
     Args:
         X: 2D input data tensor (real-valued)
@@ -104,29 +107,24 @@ def SLsheardec2D(X: torch.Tensor, shearletSystem: Dict[str, Any]) -> torch.Tenso
     Returns:
         coeffs: X x Y x N tensor of shearlet coefficients
     """
-    shearlets = shearletSystem["shearlets"]
-    nShearlets = shearletSystem["nShearlets"]
-    device = X.device
-    
-    # Determine complex dtype
-    if X.dtype == torch.float32:
-        ctype = torch.complex64
-    else:
-        ctype = torch.complex128
-    
-    # Allocate output
-    coeffs = torch.zeros(shearlets.shape, dtype=ctype, device=device)
+    shearlets = shearletSystem["shearlets"]  # (rows, cols, nShearlets)
     
     # Get data in frequency domain
     Xfreq = torch.fft.fftshift(torch.fft.fft2(torch.fft.ifftshift(X)))
     
-    # Compute shearlet coefficients
-    for j in range(nShearlets):
-        coeffs[:, :, j] = torch.fft.fftshift(
-            torch.fft.ifft2(
-                torch.fft.ifftshift(Xfreq * torch.conj(shearlets[:, :, j]))
-            )
-        )
+    # Batch multiply: Xfreq (rows, cols) * conj(shearlets) (rows, cols, N)
+    # Broadcasting Xfreq to (rows, cols, 1) then multiply
+    products = Xfreq.unsqueeze(-1) * torch.conj(shearlets)  # (rows, cols, N)
+    
+    # Batch ifftshift, ifft2, fftshift on dims (0,1)
+    # Move N dimension to front for batch processing: (N, rows, cols)
+    products_t = products.permute(2, 0, 1)  # (N, rows, cols)
+    products_t = torch.fft.ifftshift(products_t, dim=(1, 2))
+    coeffs_t = torch.fft.ifft2(products_t, dim=(1, 2))
+    coeffs_t = torch.fft.fftshift(coeffs_t, dim=(1, 2))
+    
+    # Move back to (rows, cols, N)
+    coeffs = coeffs_t.permute(1, 2, 0)
     
     # Return real part (imaginary part should be negligible for real input)
     return coeffs.real.to(X.dtype)
@@ -134,7 +132,9 @@ def SLsheardec2D(X: torch.Tensor, shearletSystem: Dict[str, Any]) -> torch.Tenso
 
 def SLshearrec2D(coeffs: torch.Tensor, shearletSystem: Dict[str, Any]) -> torch.Tensor:
     """
-    2D reconstruction from shearlet coefficients (PyTorch version).
+    2D reconstruction from shearlet coefficients (PyTorch version, vectorized).
+    
+    This is an optimized version using batch FFT operations instead of loops.
     
     Args:
         coeffs: X x Y x N tensor of shearlet coefficients
@@ -143,25 +143,21 @@ def SLshearrec2D(coeffs: torch.Tensor, shearletSystem: Dict[str, Any]) -> torch.
     Returns:
         X: Reconstructed 2D data tensor
     """
-    shearlets = shearletSystem["shearlets"]
-    dualFrameWeights = shearletSystem["dualFrameWeights"]
-    nShearlets = shearletSystem["nShearlets"]
-    device = coeffs.device
+    shearlets = shearletSystem["shearlets"]  # (rows, cols, N)
+    dualFrameWeights = shearletSystem["dualFrameWeights"]  # (rows, cols)
     
-    # Determine complex dtype
-    if coeffs.dtype == torch.float32:
-        ctype = torch.complex64
-    else:
-        ctype = torch.complex128
+    # Batch fft2 on all coefficients
+    # Move N to batch dimension: (N, rows, cols)
+    coeffs_t = coeffs.permute(2, 0, 1)
+    coeffs_t = torch.fft.ifftshift(coeffs_t, dim=(1, 2))
+    coeffs_freq_t = torch.fft.fft2(coeffs_t, dim=(1, 2))
+    coeffs_freq_t = torch.fft.fftshift(coeffs_freq_t, dim=(1, 2))
     
-    # Accumulate in frequency domain
-    X = torch.zeros((coeffs.shape[0], coeffs.shape[1]), dtype=ctype, device=device)
+    # Move back to (rows, cols, N)
+    coeffs_freq = coeffs_freq_t.permute(1, 2, 0)
     
-    for j in range(nShearlets):
-        coeff_freq = torch.fft.fftshift(
-            torch.fft.fft2(torch.fft.ifftshift(coeffs[:, :, j]))
-        )
-        X = X + coeff_freq * shearlets[:, :, j]
+    # Multiply with shearlets and sum over N dimension
+    X = torch.sum(coeffs_freq * shearlets, dim=2)
     
     # Normalize by dual frame weights and inverse FFT
     X = torch.fft.fftshift(
@@ -173,9 +169,11 @@ def SLshearrec2D(coeffs: torch.Tensor, shearletSystem: Dict[str, Any]) -> torch.
 
 def SLshearadjoint2D(coeffs: torch.Tensor, shearletSystem: Dict[str, Any]) -> torch.Tensor:
     """
-    2D adjoint from shearlet coefficients (PyTorch version).
+    2D adjoint from shearlet coefficients (PyTorch version, vectorized).
     
     The adjoint satisfies: <Ax, y> = <x, A*y>
+    
+    This is an optimized version using batch FFT operations instead of loops.
     
     Args:
         coeffs: X x Y x N tensor of shearlet coefficients
@@ -184,24 +182,20 @@ def SLshearadjoint2D(coeffs: torch.Tensor, shearletSystem: Dict[str, Any]) -> to
     Returns:
         X: Adjoint result, 2D data tensor
     """
-    shearlets = shearletSystem["shearlets"]
-    nShearlets = shearletSystem["nShearlets"]
-    device = coeffs.device
+    shearlets = shearletSystem["shearlets"]  # (rows, cols, N)
     
-    # Determine complex dtype
-    if coeffs.dtype == torch.float32:
-        ctype = torch.complex64
-    else:
-        ctype = torch.complex128
+    # Batch fft2 on all coefficients
+    # Move N to batch dimension: (N, rows, cols)
+    coeffs_t = coeffs.permute(2, 0, 1)
+    coeffs_t = torch.fft.ifftshift(coeffs_t, dim=(1, 2))
+    coeffs_freq_t = torch.fft.fft2(coeffs_t, dim=(1, 2))
+    coeffs_freq_t = torch.fft.fftshift(coeffs_freq_t, dim=(1, 2))
     
-    # Accumulate in frequency domain
-    X = torch.zeros((coeffs.shape[0], coeffs.shape[1]), dtype=ctype, device=device)
+    # Move back to (rows, cols, N)
+    coeffs_freq = coeffs_freq_t.permute(1, 2, 0)
     
-    for j in range(nShearlets):
-        coeff_freq = torch.fft.fftshift(
-            torch.fft.fft2(torch.fft.ifftshift(coeffs[:, :, j]))
-        )
-        X = X + shearlets[:, :, j] * coeff_freq
+    # Multiply with shearlets and sum over N dimension
+    X = torch.sum(shearlets * coeffs_freq, dim=2)
     
     # Inverse FFT (no normalization by dual frame weights)
     X = torch.fft.fftshift(torch.fft.ifft2(torch.fft.ifftshift(X)))
@@ -211,9 +205,11 @@ def SLshearadjoint2D(coeffs: torch.Tensor, shearletSystem: Dict[str, Any]) -> to
 
 def SLshearrecadjoint2D(X: torch.Tensor, shearletSystem: Dict[str, Any]) -> torch.Tensor:
     """
-    Adjoint of (pseudo-)inverse of 2D data (PyTorch version).
+    Adjoint of (pseudo-)inverse of 2D data (PyTorch version, vectorized).
     
     Note: This is also the (pseudo-)inverse of the adjoint.
+    
+    This is an optimized version using batch FFT operations instead of loops.
     
     Args:
         X: 2D input data tensor
@@ -222,31 +218,25 @@ def SLshearrecadjoint2D(X: torch.Tensor, shearletSystem: Dict[str, Any]) -> torc
     Returns:
         coeffs: X x Y x N tensor of shearlet coefficients
     """
-    shearlets = shearletSystem["shearlets"]
-    dualFrameWeights = shearletSystem["dualFrameWeights"]
-    nShearlets = shearletSystem["nShearlets"]
-    device = X.device
-    
-    # Determine complex dtype
-    if X.dtype == torch.float32:
-        ctype = torch.complex64
-    else:
-        ctype = torch.complex128
-    
-    # Allocate output
-    coeffs = torch.zeros(shearlets.shape, dtype=ctype, device=device)
+    shearlets = shearletSystem["shearlets"]  # (rows, cols, N)
+    dualFrameWeights = shearletSystem["dualFrameWeights"]  # (rows, cols)
     
     # Get data in frequency domain, normalized by dual frame weights
     Xfreq = torch.fft.fftshift(torch.fft.fft2(torch.fft.ifftshift(X)))
     Xfreq = Xfreq / dualFrameWeights
     
-    # Compute coefficients
-    for j in range(nShearlets):
-        coeffs[:, :, j] = torch.fft.fftshift(
-            torch.fft.ifft2(
-                torch.fft.ifftshift(Xfreq * torch.conj(shearlets[:, :, j]))
-            )
-        )
+    # Batch multiply: Xfreq (rows, cols) * conj(shearlets) (rows, cols, N)
+    products = Xfreq.unsqueeze(-1) * torch.conj(shearlets)  # (rows, cols, N)
+    
+    # Batch ifftshift, ifft2, fftshift on dims (0,1)
+    # Move N dimension to front for batch processing: (N, rows, cols)
+    products_t = products.permute(2, 0, 1)  # (N, rows, cols)
+    products_t = torch.fft.ifftshift(products_t, dim=(1, 2))
+    coeffs_t = torch.fft.ifft2(products_t, dim=(1, 2))
+    coeffs_t = torch.fft.fftshift(coeffs_t, dim=(1, 2))
+    
+    # Move back to (rows, cols, N)
+    coeffs = coeffs_t.permute(1, 2, 0)
     
     return coeffs.real.to(X.dtype)
 
@@ -258,7 +248,7 @@ def SLshearrecadjoint2D(X: torch.Tensor, shearletSystem: Dict[str, Any]) -> torc
 def SLsheardecPadded2D(
     X: torch.Tensor,
     nScales: int,
-    shearLevels: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    shearLevels: Optional[Union[torch.Tensor, List]] = None,
     pad_mode: str = 'reflect',
     full: int = 0,
     directionalFilter: Optional[torch.Tensor] = None,

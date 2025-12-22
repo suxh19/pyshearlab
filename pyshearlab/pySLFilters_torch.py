@@ -218,10 +218,12 @@ def MakeONFilter(Type: str, Par: int = 1,
 
 def MirrorFilt(x: torch.Tensor) -> torch.Tensor:
     """
-    Apply (-1)^t modulation (PyTorch version).
+    Apply (-1)^t modulation (PyTorch version, optimized).
     
     This is a translation of the original Matlab implementation of
     MirrorFilt.m from the WaveLab850 toolbox.
+    
+    Optimized: Uses 1 - 2*(n%2) instead of pow(-1, n) to avoid temporary tensors.
 
     Args:
         x: 1D input tensor
@@ -230,18 +232,21 @@ def MirrorFilt(x: torch.Tensor) -> torch.Tensor:
         Modulated signal with DC frequency content shifted to Nyquist frequency
     """
     n = x.size(0)
-    modulation = torch.pow(torch.tensor(-1.0, dtype=x.dtype, device=x.device), 
-                           torch.arange(n, dtype=x.dtype, device=x.device))
+    # (-1)^n = 1 - 2*(n%2) is faster than torch.pow
+    indices = torch.arange(n, dtype=torch.int64, device=x.device)
+    modulation = (1 - 2 * (indices % 2)).to(x.dtype)
     return modulation * x
 
 
 def modulate2(x: torch.Tensor, type: str, 
               center: Optional[torch.Tensor] = None) -> torch.Tensor:
     """
-    2D modulation (PyTorch version).
+    2D modulation (PyTorch version, optimized).
     
     This is a translation of the original Matlab implementation of
     modulate2.m from the Nonsubsampled Contourlet Toolbox.
+    
+    Optimized: Uses integer arithmetic for modulation pattern.
 
     Args:
         x: 1D or 2D input tensor
@@ -251,46 +256,51 @@ def modulate2(x: torch.Tensor, type: str,
     Returns:
         Modulated tensor
     """
-    if center is None:
-        center = torch.tensor([0, 0], dtype=x.dtype, device=x.device)
-    
-    size = torch.tensor(x.shape, dtype=x.dtype, device=x.device)
+    device = x.device
+    dtype = x.dtype
     
     if x.dim() == 1:
-        if torch.equal(center, torch.tensor([0, 0], dtype=center.dtype, device=center.device)):
-            center = torch.tensor(0, dtype=x.dtype, device=x.device)
-        origin = torch.floor(size/2) + 1 + center
-        n1 = torch.arange(int(size[0].item()), dtype=x.dtype, device=x.device) - origin + 1
-        n2 = n1
+        sz0 = x.size(0)
+        if center is None:
+            origin = sz0 // 2 + 1
+        else:
+            c = int(center.item()) if isinstance(center, torch.Tensor) else int(center)
+            origin = sz0 // 2 + 1 + c
+        
+        # Compute modulation: (-1)^(i - origin + 1) for i in 0..sz0-1
+        indices = torch.arange(sz0, dtype=torch.int64, device=device)
+        shifts = indices - origin + 1
+        m = (1 - 2 * (shifts.abs() % 2)).to(dtype)
+        return x * m
     else:
-        origin = torch.floor(size/2) + 1 + center
-        n1 = torch.arange(int(size[0].item()), dtype=x.dtype, device=x.device) - origin[0] + 1
-        n2 = torch.arange(int(size[1].item()), dtype=x.dtype, device=x.device) - origin[1] + 1
-    
-    if type == 'r':
-        m1 = torch.pow(torch.tensor(-1.0, dtype=x.dtype, device=x.device), n1)
-        if x.dim() == 1:
-            y = x * m1
+        sz0, sz1 = x.shape
+        if center is None:
+            origin0 = sz0 // 2 + 1
+            origin1 = sz1 // 2 + 1
         else:
-            y = x * m1.unsqueeze(1)
-    elif type == 'c':
-        m2 = torch.pow(torch.tensor(-1.0, dtype=x.dtype, device=x.device), n2)
-        if x.dim() == 1:
-            y = x * m2
+            origin0 = sz0 // 2 + 1 + int(center[0].item() if isinstance(center, torch.Tensor) else center[0])
+            origin1 = sz1 // 2 + 1 + int(center[1].item() if isinstance(center, torch.Tensor) else center[1])
+        
+        # Compute modulation indices
+        n1 = torch.arange(sz0, dtype=torch.int64, device=device) - origin0 + 1
+        n2 = torch.arange(sz1, dtype=torch.int64, device=device) - origin1 + 1
+        
+        if type == 'r':
+            # Modulate along rows
+            m1 = (1 - 2 * (n1.abs() % 2)).to(dtype)
+            return x * m1.unsqueeze(1)
+        elif type == 'c':
+            # Modulate along columns
+            m2 = (1 - 2 * (n2.abs() % 2)).to(dtype)
+            return x * m2.unsqueeze(0)
+        elif type == 'b':
+            # Modulate along both
+            m1 = (1 - 2 * (n1.abs() % 2)).to(dtype)
+            m2 = (1 - 2 * (n2.abs() % 2)).to(dtype)
+            m = torch.outer(m1, m2)
+            return x * m
         else:
-            y = x * m2.unsqueeze(0)
-    elif type == 'b':
-        m1 = torch.pow(torch.tensor(-1.0, dtype=x.dtype, device=x.device), n1)
-        m2 = torch.pow(torch.tensor(-1.0, dtype=x.dtype, device=x.device), n2)
-        m = torch.outer(m1, m2)
-        if x.dim() == 1:
-            y = x * m1
-        else:
-            y = x * m
-    else:
-        raise ValueError(f"Unknown modulation type: {type}")
-    
-    return y
+            raise ValueError(f"Unknown modulation type: {type}")
 
 
 def dmaxflat(N: int, d: int, 
