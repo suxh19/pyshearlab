@@ -22,7 +22,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"使用设备: {device}")
 
 # 1. 加载 0000.tif 图像
-image_path = os.path.join(base_dir, "0000.tif")
+image_path = os.path.join(base_dir, "0001.tif")
 image_np = np.array(Image.open(image_path), dtype=np.float64)
 
 # 归一化到 [0, 1]

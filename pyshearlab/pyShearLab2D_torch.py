@@ -98,33 +98,55 @@ def SLsheardec2D(X: torch.Tensor, shearletSystem: Dict[str, Any]) -> torch.Tenso
     """
     Shearlet decomposition of 2D data (PyTorch version, vectorized).
     
-    This is an optimized version using batch FFT operations instead of loops.
+    This is an optimized version using batch FFT operations.
+    Supports both single image and batch processing.
     
     Args:
-        X: 2D input data tensor (real-valued)
+        X: 2D (H, W) or 3D (B, H, W) input data tensor (real-valued)
         shearletSystem: Shearlet system dictionary from SLgetShearletSystem2D
     
     Returns:
-        coeffs: X x Y x N tensor of shearlet coefficients
+        coeffs: (H, W, N) for 2D input or (B, H, W, N) for 3D input
     """
-    shearlets = shearletSystem["shearlets"]  # (rows, cols, nShearlets)
+    shearlets = shearletSystem["shearlets"]  # (H, W, N)
     
-    # Get data in frequency domain
-    Xfreq = torch.fft.fftshift(torch.fft.fft2(torch.fft.ifftshift(X)))
+    is_batch = X.dim() == 3
     
-    # Batch multiply: Xfreq (rows, cols) * conj(shearlets) (rows, cols, N)
-    # Broadcasting Xfreq to (rows, cols, 1) then multiply
-    products = Xfreq.unsqueeze(-1) * torch.conj(shearlets)  # (rows, cols, N)
-    
-    # Batch ifftshift, ifft2, fftshift on dims (0,1)
-    # Move N dimension to front for batch processing: (N, rows, cols)
-    products_t = products.permute(2, 0, 1)  # (N, rows, cols)
-    products_t = torch.fft.ifftshift(products_t, dim=(1, 2))
-    coeffs_t = torch.fft.ifft2(products_t, dim=(1, 2))
-    coeffs_t = torch.fft.fftshift(coeffs_t, dim=(1, 2))
-    
-    # Move back to (rows, cols, N)
-    coeffs = coeffs_t.permute(1, 2, 0)
+    if is_batch:
+        # Batch mode: X is (B, H, W)
+        # FFT on spatial dimensions (1, 2)
+        Xfreq = torch.fft.fftshift(
+            torch.fft.fft2(torch.fft.ifftshift(X, dim=(1, 2)), dim=(1, 2)),
+            dim=(1, 2)
+        )  # (B, H, W)
+        
+        # Broadcast: Xfreq (B, H, W, 1) * conj(shearlets) (1, H, W, N)
+        products = Xfreq.unsqueeze(-1) * torch.conj(shearlets.unsqueeze(0))  # (B, H, W, N)
+        
+        # Batch ifft2 on spatial dims (1, 2)
+        # Move N to dim 1 for batch processing: (B, N, H, W)
+        products_t = products.permute(0, 3, 1, 2)  # (B, N, H, W)
+        products_t = torch.fft.ifftshift(products_t, dim=(2, 3))
+        coeffs_t = torch.fft.ifft2(products_t, dim=(2, 3))
+        coeffs_t = torch.fft.fftshift(coeffs_t, dim=(2, 3))
+        
+        # Move back to (B, H, W, N)
+        coeffs = coeffs_t.permute(0, 2, 3, 1)
+    else:
+        # Single image mode: X is (H, W)
+        Xfreq = torch.fft.fftshift(torch.fft.fft2(torch.fft.ifftshift(X)))
+        
+        # Broadcast: Xfreq (H, W, 1) * conj(shearlets) (H, W, N)
+        products = Xfreq.unsqueeze(-1) * torch.conj(shearlets)  # (H, W, N)
+        
+        # Batch ifft on dims (0, 1)
+        products_t = products.permute(2, 0, 1)  # (N, H, W)
+        products_t = torch.fft.ifftshift(products_t, dim=(1, 2))
+        coeffs_t = torch.fft.ifft2(products_t, dim=(1, 2))
+        coeffs_t = torch.fft.fftshift(coeffs_t, dim=(1, 2))
+        
+        # Move back to (H, W, N)
+        coeffs = coeffs_t.permute(1, 2, 0)
     
     # Return real part (imaginary part should be negligible for real input)
     return coeffs.real.to(X.dtype)
@@ -134,35 +156,53 @@ def SLshearrec2D(coeffs: torch.Tensor, shearletSystem: Dict[str, Any]) -> torch.
     """
     2D reconstruction from shearlet coefficients (PyTorch version, vectorized).
     
-    This is an optimized version using batch FFT operations instead of loops.
+    Supports both single image and batch processing.
     
     Args:
-        coeffs: X x Y x N tensor of shearlet coefficients
+        coeffs: (H, W, N) for single or (B, H, W, N) for batch
         shearletSystem: Shearlet system dictionary
     
     Returns:
-        X: Reconstructed 2D data tensor
+        X: (H, W) for single or (B, H, W) for batch
     """
-    shearlets = shearletSystem["shearlets"]  # (rows, cols, N)
-    dualFrameWeights = shearletSystem["dualFrameWeights"]  # (rows, cols)
+    shearlets = shearletSystem["shearlets"]  # (H, W, N)
+    dualFrameWeights = shearletSystem["dualFrameWeights"]  # (H, W)
     
-    # Batch fft2 on all coefficients
-    # Move N to batch dimension: (N, rows, cols)
-    coeffs_t = coeffs.permute(2, 0, 1)
-    coeffs_t = torch.fft.ifftshift(coeffs_t, dim=(1, 2))
-    coeffs_freq_t = torch.fft.fft2(coeffs_t, dim=(1, 2))
-    coeffs_freq_t = torch.fft.fftshift(coeffs_freq_t, dim=(1, 2))
+    is_batch = coeffs.dim() == 4
     
-    # Move back to (rows, cols, N)
-    coeffs_freq = coeffs_freq_t.permute(1, 2, 0)
-    
-    # Multiply with shearlets and sum over N dimension
-    X = torch.sum(coeffs_freq * shearlets, dim=2)
-    
-    # Normalize by dual frame weights and inverse FFT
-    X = torch.fft.fftshift(
-        torch.fft.ifft2(torch.fft.ifftshift(X / dualFrameWeights))
-    )
+    if is_batch:
+        # Batch mode: coeffs is (B, H, W, N)
+        # Move N to dim 1: (B, N, H, W)
+        coeffs_t = coeffs.permute(0, 3, 1, 2)
+        coeffs_t = torch.fft.ifftshift(coeffs_t, dim=(2, 3))
+        coeffs_freq_t = torch.fft.fft2(coeffs_t, dim=(2, 3))
+        coeffs_freq_t = torch.fft.fftshift(coeffs_freq_t, dim=(2, 3))
+        
+        # Back to (B, H, W, N)
+        coeffs_freq = coeffs_freq_t.permute(0, 2, 3, 1)
+        
+        # Multiply with shearlets (1, H, W, N) and sum over N
+        X = torch.sum(coeffs_freq * shearlets.unsqueeze(0), dim=3)  # (B, H, W)
+        
+        # Normalize and inverse FFT
+        X = X / dualFrameWeights.unsqueeze(0)
+        X = torch.fft.fftshift(
+            torch.fft.ifft2(torch.fft.ifftshift(X, dim=(1, 2)), dim=(1, 2)),
+            dim=(1, 2)
+        )
+    else:
+        # Single image mode: coeffs is (H, W, N)
+        coeffs_t = coeffs.permute(2, 0, 1)  # (N, H, W)
+        coeffs_t = torch.fft.ifftshift(coeffs_t, dim=(1, 2))
+        coeffs_freq_t = torch.fft.fft2(coeffs_t, dim=(1, 2))
+        coeffs_freq_t = torch.fft.fftshift(coeffs_freq_t, dim=(1, 2))
+        
+        coeffs_freq = coeffs_freq_t.permute(1, 2, 0)  # (H, W, N)
+        
+        X = torch.sum(coeffs_freq * shearlets, dim=2)
+        X = torch.fft.fftshift(
+            torch.fft.ifft2(torch.fft.ifftshift(X / dualFrameWeights))
+        )
     
     return X.real.to(coeffs.dtype)
 
@@ -172,33 +212,47 @@ def SLshearadjoint2D(coeffs: torch.Tensor, shearletSystem: Dict[str, Any]) -> to
     2D adjoint from shearlet coefficients (PyTorch version, vectorized).
     
     The adjoint satisfies: <Ax, y> = <x, A*y>
-    
-    This is an optimized version using batch FFT operations instead of loops.
+    Supports both single image and batch processing.
     
     Args:
-        coeffs: X x Y x N tensor of shearlet coefficients
+        coeffs: (H, W, N) for single or (B, H, W, N) for batch
         shearletSystem: Shearlet system dictionary
     
     Returns:
-        X: Adjoint result, 2D data tensor
+        X: (H, W) for single or (B, H, W) for batch
     """
-    shearlets = shearletSystem["shearlets"]  # (rows, cols, N)
+    shearlets = shearletSystem["shearlets"]  # (H, W, N)
     
-    # Batch fft2 on all coefficients
-    # Move N to batch dimension: (N, rows, cols)
-    coeffs_t = coeffs.permute(2, 0, 1)
-    coeffs_t = torch.fft.ifftshift(coeffs_t, dim=(1, 2))
-    coeffs_freq_t = torch.fft.fft2(coeffs_t, dim=(1, 2))
-    coeffs_freq_t = torch.fft.fftshift(coeffs_freq_t, dim=(1, 2))
+    is_batch = coeffs.dim() == 4
     
-    # Move back to (rows, cols, N)
-    coeffs_freq = coeffs_freq_t.permute(1, 2, 0)
-    
-    # Multiply with shearlets and sum over N dimension
-    X = torch.sum(shearlets * coeffs_freq, dim=2)
-    
-    # Inverse FFT (no normalization by dual frame weights)
-    X = torch.fft.fftshift(torch.fft.ifft2(torch.fft.ifftshift(X)))
+    if is_batch:
+        # Batch mode: coeffs is (B, H, W, N)
+        coeffs_t = coeffs.permute(0, 3, 1, 2)  # (B, N, H, W)
+        coeffs_t = torch.fft.ifftshift(coeffs_t, dim=(2, 3))
+        coeffs_freq_t = torch.fft.fft2(coeffs_t, dim=(2, 3))
+        coeffs_freq_t = torch.fft.fftshift(coeffs_freq_t, dim=(2, 3))
+        
+        coeffs_freq = coeffs_freq_t.permute(0, 2, 3, 1)  # (B, H, W, N)
+        
+        # Multiply with shearlets and sum over N
+        X = torch.sum(shearlets.unsqueeze(0) * coeffs_freq, dim=3)  # (B, H, W)
+        
+        # Inverse FFT
+        X = torch.fft.fftshift(
+            torch.fft.ifft2(torch.fft.ifftshift(X, dim=(1, 2)), dim=(1, 2)),
+            dim=(1, 2)
+        )
+    else:
+        # Single image mode: coeffs is (H, W, N)
+        coeffs_t = coeffs.permute(2, 0, 1)  # (N, H, W)
+        coeffs_t = torch.fft.ifftshift(coeffs_t, dim=(1, 2))
+        coeffs_freq_t = torch.fft.fft2(coeffs_t, dim=(1, 2))
+        coeffs_freq_t = torch.fft.fftshift(coeffs_freq_t, dim=(1, 2))
+        
+        coeffs_freq = coeffs_freq_t.permute(1, 2, 0)  # (H, W, N)
+        
+        X = torch.sum(shearlets * coeffs_freq, dim=2)
+        X = torch.fft.fftshift(torch.fft.ifft2(torch.fft.ifftshift(X)))
     
     return X.real.to(coeffs.dtype)
 
@@ -208,35 +262,51 @@ def SLshearrecadjoint2D(X: torch.Tensor, shearletSystem: Dict[str, Any]) -> torc
     Adjoint of (pseudo-)inverse of 2D data (PyTorch version, vectorized).
     
     Note: This is also the (pseudo-)inverse of the adjoint.
-    
-    This is an optimized version using batch FFT operations instead of loops.
+    Supports both single image and batch processing.
     
     Args:
-        X: 2D input data tensor
+        X: (H, W) for single or (B, H, W) for batch
         shearletSystem: Shearlet system dictionary
     
     Returns:
-        coeffs: X x Y x N tensor of shearlet coefficients
+        coeffs: (H, W, N) for single or (B, H, W, N) for batch
     """
-    shearlets = shearletSystem["shearlets"]  # (rows, cols, N)
-    dualFrameWeights = shearletSystem["dualFrameWeights"]  # (rows, cols)
+    shearlets = shearletSystem["shearlets"]  # (H, W, N)
+    dualFrameWeights = shearletSystem["dualFrameWeights"]  # (H, W)
     
-    # Get data in frequency domain, normalized by dual frame weights
-    Xfreq = torch.fft.fftshift(torch.fft.fft2(torch.fft.ifftshift(X)))
-    Xfreq = Xfreq / dualFrameWeights
+    is_batch = X.dim() == 3
     
-    # Batch multiply: Xfreq (rows, cols) * conj(shearlets) (rows, cols, N)
-    products = Xfreq.unsqueeze(-1) * torch.conj(shearlets)  # (rows, cols, N)
-    
-    # Batch ifftshift, ifft2, fftshift on dims (0,1)
-    # Move N dimension to front for batch processing: (N, rows, cols)
-    products_t = products.permute(2, 0, 1)  # (N, rows, cols)
-    products_t = torch.fft.ifftshift(products_t, dim=(1, 2))
-    coeffs_t = torch.fft.ifft2(products_t, dim=(1, 2))
-    coeffs_t = torch.fft.fftshift(coeffs_t, dim=(1, 2))
-    
-    # Move back to (rows, cols, N)
-    coeffs = coeffs_t.permute(1, 2, 0)
+    if is_batch:
+        # Batch mode: X is (B, H, W)
+        Xfreq = torch.fft.fftshift(
+            torch.fft.fft2(torch.fft.ifftshift(X, dim=(1, 2)), dim=(1, 2)),
+            dim=(1, 2)
+        )  # (B, H, W)
+        Xfreq = Xfreq / dualFrameWeights.unsqueeze(0)  # (B, H, W)
+        
+        # Broadcast: Xfreq (B, H, W, 1) * conj(shearlets) (1, H, W, N)
+        products = Xfreq.unsqueeze(-1) * torch.conj(shearlets.unsqueeze(0))  # (B, H, W, N)
+        
+        # Batch ifft2
+        products_t = products.permute(0, 3, 1, 2)  # (B, N, H, W)
+        products_t = torch.fft.ifftshift(products_t, dim=(2, 3))
+        coeffs_t = torch.fft.ifft2(products_t, dim=(2, 3))
+        coeffs_t = torch.fft.fftshift(coeffs_t, dim=(2, 3))
+        
+        coeffs = coeffs_t.permute(0, 2, 3, 1)  # (B, H, W, N)
+    else:
+        # Single image mode: X is (H, W)
+        Xfreq = torch.fft.fftshift(torch.fft.fft2(torch.fft.ifftshift(X)))
+        Xfreq = Xfreq / dualFrameWeights
+        
+        products = Xfreq.unsqueeze(-1) * torch.conj(shearlets)  # (H, W, N)
+        
+        products_t = products.permute(2, 0, 1)  # (N, H, W)
+        products_t = torch.fft.ifftshift(products_t, dim=(1, 2))
+        coeffs_t = torch.fft.ifft2(products_t, dim=(1, 2))
+        coeffs_t = torch.fft.fftshift(coeffs_t, dim=(1, 2))
+        
+        coeffs = coeffs_t.permute(1, 2, 0)  # (H, W, N)
     
     return coeffs.real.to(X.dtype)
 

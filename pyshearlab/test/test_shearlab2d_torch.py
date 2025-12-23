@@ -194,6 +194,107 @@ class TestPaddedAPI:
         assert coeffs.dtype == torch.float32
         assert X_rec.dtype == torch.float32
 
+# ============================================================================
+# Test Batch Processing
+# ============================================================================
+
+class TestBatchProcessing:
+    """Test batch processing functionality."""
+    
+    def test_batch_decomposition_shape(self, device):
+        """Test batch decomposition output shape."""
+        B, H, W = 4, 128, 128
+        X = torch.randn(B, H, W, dtype=torch.float64, device=device)
+        
+        shearletSystem = torch_shearlab.SLgetShearletSystem2D(
+            H, W, nScales=2, device=device)
+        
+        coeffs = torch_shearlab.SLsheardec2D(X, shearletSystem)
+        
+        # Check shape: (B, H, W, N)
+        assert coeffs.dim() == 4
+        assert coeffs.shape[0] == B
+        assert coeffs.shape[1] == H
+        assert coeffs.shape[2] == W
+        assert coeffs.shape[3] == shearletSystem['nShearlets']
+    
+    def test_batch_reconstruction(self, device):
+        """Test batch decomposition + reconstruction recovers original."""
+        B, H, W = 4, 128, 128
+        X = torch.randn(B, H, W, dtype=torch.float64, device=device)
+        
+        shearletSystem = torch_shearlab.SLgetShearletSystem2D(
+            H, W, nScales=2, device=device)
+        
+        coeffs = torch_shearlab.SLsheardec2D(X, shearletSystem)
+        X_rec = torch_shearlab.SLshearrec2D(coeffs, shearletSystem)
+        
+        # Check shape
+        assert X_rec.shape == X.shape
+        
+        # Check reconstruction error
+        error = torch.max(torch.abs(X - X_rec)).item()
+        assert error < 1e-10, f"Batch reconstruction error too large: {error}"
+    
+    def test_batch_vs_single(self, device):
+        """Test batch processing matches single image processing."""
+        B, H, W = 4, 64, 64
+        X_batch = torch.randn(B, H, W, dtype=torch.float64, device=device)
+        
+        shearletSystem = torch_shearlab.SLgetShearletSystem2D(
+            H, W, nScales=2, device=device)
+        
+        # Batch processing
+        coeffs_batch = torch_shearlab.SLsheardec2D(X_batch, shearletSystem)
+        
+        # Single image processing
+        for i in range(B):
+            coeffs_single = torch_shearlab.SLsheardec2D(X_batch[i], shearletSystem)
+            np.testing.assert_allclose(
+                coeffs_batch[i].cpu().numpy(),
+                coeffs_single.cpu().numpy(),
+                rtol=1e-12, atol=1e-12
+            )
+    
+    def test_batch_adjoint(self, device):
+        """Test batch adjoint property."""
+        B, H, W = 2, 64, 64
+        X = torch.randn(B, H, W, dtype=torch.float64, device=device)
+        
+        shearletSystem = torch_shearlab.SLgetShearletSystem2D(
+            H, W, nScales=2, device=device)
+        
+        # Forward: coeffs = A * X
+        coeffs = torch_shearlab.SLsheardec2D(X, shearletSystem)
+        
+        # Adjoint: X_adj = A^* * coeffs
+        X_adj = torch_shearlab.SLshearadjoint2D(coeffs, shearletSystem)
+        
+        # Check shape
+        assert X_adj.shape == X.shape
+        
+        # Check adjoint equation for each batch: <X[i], X_adj[i]> ≈ <coeffs[i], coeffs[i]>
+        for i in range(B):
+            lhs = torch.sum(X[i] * X_adj[i]).item()
+            rhs = torch.sum(coeffs[i] * coeffs[i]).item()
+            np.testing.assert_allclose(lhs, rhs, rtol=1e-8)
+    
+    def test_single_in_batch(self, device):
+        """Test B=1 edge case."""
+        B, H, W = 1, 64, 64
+        X = torch.randn(B, H, W, dtype=torch.float64, device=device)
+        
+        shearletSystem = torch_shearlab.SLgetShearletSystem2D(
+            H, W, nScales=2, device=device)
+        
+        coeffs = torch_shearlab.SLsheardec2D(X, shearletSystem)
+        X_rec = torch_shearlab.SLshearrec2D(coeffs, shearletSystem)
+        
+        assert X_rec.shape == X.shape
+        error = torch.max(torch.abs(X - X_rec)).item()
+        assert error < 1e-10
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
