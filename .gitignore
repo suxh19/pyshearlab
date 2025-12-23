@@ -33,6 +33,8 @@ examples/results/
 *.manifest
 *.spec
 
+examples/results_torch/
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
